@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"math/rand"
 	"net"
 	"os"
 	"time"
@@ -15,12 +14,8 @@ import (
 )
 
 var (
-	ErrTimeout         = errors.New("timeout")
-	ErrIncompleteWrite = errors.New("incomplete write")
-	ErrUnknownReply    = errors.New("unknown reply")
-	ErrCorruptedReply  = errors.New("corrupted reply")
-
-	rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
+	ErrUnknownReply   = errors.New("unknown reply")
+	ErrCorruptedReply = errors.New("corrupted reply")
 )
 
 const (
