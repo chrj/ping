@@ -11,6 +11,7 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -43,6 +44,7 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 	var c *icmp.PacketConn
 	var err error
 	var proto int
+	var pktType icmp.Type
 
 	rc := make(chan Reply)
 
@@ -53,9 +55,11 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 	if len(r.Target) == 4 {
 		c, err = icmp.ListenPacket("udp6", "::")
 		proto = ProtocolICMPv6
+		pktType = ipv6.ICMPTypeEchoRequest
 	} else {
 		c, err = icmp.ListenPacket("udp4", "0.0.0.0")
 		proto = ProtocolICMP
+		pktType = ipv4.ICMPTypeEcho
 	}
 
 	if err != nil {
@@ -167,7 +171,11 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 		id := os.Getpid() & 0xffff
 		data := make([]byte, r.Size)
 
+		lim := rate.NewLimiter(rate.Every(r.Delay), 1)
+
 		for seq := 0; seq < r.Count; seq++ {
+
+			lim.Wait(ctx)
 
 			t := time.Now()
 			tsb, err := t.MarshalBinary()
@@ -179,7 +187,7 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 			copy(data, tsb)
 
 			msg := icmp.Message{
-				Type: ipv4.ICMPTypeEcho,
+				Type: pktType,
 				Code: 0,
 				Body: &icmp.Echo{
 					ID:   id,
@@ -201,8 +209,6 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 			} else if n != len(mmsg) {
 				log.Printf("incomplete write: %v", err)
 			}
-
-			time.Sleep(r.Delay)
 
 		}
 
