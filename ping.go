@@ -3,7 +3,6 @@ package ping
 import (
 	"context"
 	"errors"
-	"log"
 	"net"
 	"os"
 	"time"
@@ -22,6 +21,9 @@ var (
 const (
 	ProtocolICMP   = 1
 	ProtocolICMPv6 = 58
+
+	// tsLen is the size of time.Time.MarshalBinary() output.
+	tsLen = 15
 )
 
 type Request struct {
@@ -40,147 +42,64 @@ type Reply struct {
 }
 
 func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
-
 	var c *icmp.PacketConn
 	var err error
 	var proto int
 	var pktType icmp.Type
 
-	rc := make(chan Reply)
-
-	if r.Size < 15 {
-		r.Size = 15
+	if r.Size < tsLen {
+		r.Size = tsLen
 	}
 
-	if len(r.Target) == 4 {
-		c, err = icmp.ListenPacket("udp6", "::")
-		proto = ProtocolICMPv6
-		pktType = ipv6.ICMPTypeEchoRequest
-	} else {
+	if r.Target.To4() != nil {
 		c, err = icmp.ListenPacket("udp4", "0.0.0.0")
 		proto = ProtocolICMP
 		pktType = ipv4.ICMPTypeEcho
+	} else {
+		c, err = icmp.ListenPacket("udp6", "::")
+		proto = ProtocolICMPv6
+		pktType = ipv6.ICMPTypeEchoRequest
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	go func() {
-
-		defer c.Close()
-
-		received := 0
-
-		var im *icmp.Message
-
-		for {
-
-			sent := time.Now()
-
-			var reply Reply
-			var err error
-			var n int
-
-			rb := make([]byte, 1500)
-
-			if proto == ProtocolICMPv6 {
-
-				var rcm *ipv6.ControlMessage
-
-				pc := c.IPv6PacketConn()
-				if err := pc.SetControlMessage(0xFF, true); err != nil {
-					panic("couldn't set ipv6 cm flags: " + err.Error())
-				}
-
-				n, rcm, _, err = pc.ReadFrom(rb)
-				if err != nil {
-					reply.Err = err
-					goto send
-				}
-
-				reply.Src = rcm.Src
-				reply.TTL = rcm.HopLimit
-
-			} else {
-
-				var rcm *ipv4.ControlMessage
-
-				pc := c.IPv4PacketConn()
-				if err := pc.SetControlMessage(0xFF, true); err != nil {
-					panic("couldn't set ipv4 cm flags: " + err.Error())
-				}
-
-				n, rcm, _, err = pc.ReadFrom(rb)
-				if err != nil {
-					log.Printf("err: %v", err)
-					reply.Err = err
-					goto send
-				}
-
-				reply.Src = rcm.Src
-				reply.TTL = rcm.TTL
-
-			}
-
-			im, err = icmp.ParseMessage(proto, rb[:n])
-			if err != nil {
-				reply.Err = err
-				goto send
-			}
-
-			switch im.Type {
-
-			case ipv4.ICMPTypeEchoReply, ipv6.ICMPTypeEchoReply:
-
-				if ep, ok := im.Body.(*icmp.Echo); ok {
-
-					err := sent.UnmarshalBinary(ep.Data[0:15])
-					if err != nil {
-						reply.Err = ErrCorruptedReply
-						break
-					}
-
-					reply.RTT = time.Since(sent)
-					reply.Seq = ep.Seq
-
-					break
-				}
-
-			default:
-				reply.Err = ErrUnknownReply
-			}
-
-		send:
-
-			rc <- reply
-
-			received += 1
-
-			if received >= r.Count {
-				close(rc)
-				return
-			}
-
+	// Set up control message flags before spawning goroutines so we can
+	// return errors directly instead of panicking.
+	if proto == ProtocolICMPv6 {
+		pc := c.IPv6PacketConn()
+		if err := pc.SetControlMessage(0xFF, true); err != nil {
+			_ = c.Close()
+			return nil, err
 		}
+	} else {
+		pc := c.IPv4PacketConn()
+		if err := pc.SetControlMessage(0xFF, true); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+	}
 
-	}()
+	rc := make(chan Reply)
+	done := make(chan struct{})
 
+	// Sender goroutine: sends r.Count echo requests, then signals done.
 	go func() {
+		defer close(done)
 
 		id := os.Getpid() & 0xffff
 		data := make([]byte, r.Size)
-
 		lim := rate.NewLimiter(rate.Every(r.Delay), 1)
 
 		for seq := 0; seq < r.Count; seq++ {
-
-			lim.Wait(ctx)
+			if err := lim.Wait(ctx); err != nil {
+				return
+			}
 
 			t := time.Now()
 			tsb, err := t.MarshalBinary()
 			if err != nil {
-				log.Printf("time marshal error: %v", err)
 				continue
 			}
 
@@ -198,22 +117,122 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 
 			mmsg, err := msg.Marshal(nil)
 			if err != nil {
-				log.Printf("icmp marshal error: %v", err)
 				continue
 			}
 
 			target := &net.UDPAddr{IP: r.Target}
+			if _, err := c.WriteTo(mmsg, target); err != nil {
+				continue
+			}
+		}
+	}()
 
-			if n, err := c.WriteTo(mmsg, target); err != nil {
-				log.Printf("write error: %v", err)
-			} else if n != len(mmsg) {
-				log.Printf("incomplete write: %v", err)
+	// Receiver goroutine: reads replies, closes rc when done.
+	go func() {
+		defer func() { _ = c.Close() }()
+		defer close(rc)
+
+		rb := make([]byte, 1500)
+		received := 0
+		senderDone := false
+
+		for received < r.Count {
+			// Check context cancellation.
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
 
-		}
+			// Check if sender finished (non-blocking).
+			select {
+			case <-done:
+				senderDone = true
+			default:
+			}
 
+			// Set a read deadline so we don't block forever.
+			timeout := r.Delay + time.Second
+			if err := c.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+				return
+			}
+
+			reply := receiveOne(c, proto, rb)
+
+			if reply.Err != nil {
+				if netErr, ok := reply.Err.(net.Error); ok && netErr.Timeout() {
+					// On timeout, exit if the sender is done — remaining
+					// packets are likely lost.
+					if senderDone {
+						return
+					}
+					continue
+				}
+			}
+
+			rc <- reply
+			received++
+		}
 	}()
 
 	return rc, nil
+}
 
+// receiveOne reads a single ICMP reply from the connection.
+func receiveOne(c *icmp.PacketConn, proto int, rb []byte) Reply {
+	var reply Reply
+	var n int
+	var err error
+
+	if proto == ProtocolICMPv6 {
+		var rcm *ipv6.ControlMessage
+		pc := c.IPv6PacketConn()
+		n, rcm, _, err = pc.ReadFrom(rb)
+		if err != nil {
+			reply.Err = err
+			return reply
+		}
+		reply.Src = rcm.Src
+		reply.TTL = rcm.HopLimit
+	} else {
+		var rcm *ipv4.ControlMessage
+		pc := c.IPv4PacketConn()
+		n, rcm, _, err = pc.ReadFrom(rb)
+		if err != nil {
+			reply.Err = err
+			return reply
+		}
+		reply.Src = rcm.Src
+		reply.TTL = rcm.TTL
+	}
+
+	im, err := icmp.ParseMessage(proto, rb[:n])
+	if err != nil {
+		reply.Err = err
+		return reply
+	}
+
+	switch im.Type {
+	case ipv4.ICMPTypeEchoReply, ipv6.ICMPTypeEchoReply:
+		ep, ok := im.Body.(*icmp.Echo)
+		if !ok {
+			reply.Err = ErrCorruptedReply
+			return reply
+		}
+		if len(ep.Data) < tsLen {
+			reply.Err = ErrCorruptedReply
+			return reply
+		}
+		var sent time.Time
+		if err := sent.UnmarshalBinary(ep.Data[:tsLen]); err != nil {
+			reply.Err = ErrCorruptedReply
+			return reply
+		}
+		reply.RTT = time.Since(sent)
+		reply.Seq = ep.Seq
+	default:
+		reply.Err = ErrUnknownReply
+	}
+
+	return reply
 }
