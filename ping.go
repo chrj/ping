@@ -122,8 +122,8 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 
 			target := &net.UDPAddr{IP: r.Target}
 			if _, err := c.WriteTo(mmsg, target); err != nil {
-					continue
-				}
+				continue
+			}
 		}
 	}()
 
