@@ -17,7 +17,7 @@ func skipUnprivileged(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot open ICMP socket: %v", err)
 	}
-	c.Close()
+	_ = c.Close()
 }
 
 func TestIPv4Detection(t *testing.T) {
@@ -115,13 +115,13 @@ func TestReceiveOneEchoReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer serverConn.Close()
+	defer func() { _ = serverConn.Close() }()
 
 	clientConn, err := net.DialUDP("udp4", nil, serverConn.LocalAddr().(*net.UDPAddr))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// Send the raw ICMP bytes over UDP (just for parsing test).
 	if _, err := clientConn.Write(raw); err != nil {

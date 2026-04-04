@@ -70,13 +70,13 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 	if proto == ProtocolICMPv6 {
 		pc := c.IPv6PacketConn()
 		if err := pc.SetControlMessage(0xFF, true); err != nil {
-			c.Close()
+			_ = c.Close()
 			return nil, err
 		}
 	} else {
 		pc := c.IPv4PacketConn()
 		if err := pc.SetControlMessage(0xFF, true); err != nil {
-			c.Close()
+			_ = c.Close()
 			return nil, err
 		}
 	}
@@ -121,13 +121,15 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 			}
 
 			target := &net.UDPAddr{IP: r.Target}
-			c.WriteTo(mmsg, target)
+			if _, err := c.WriteTo(mmsg, target); err != nil {
+					continue
+				}
 		}
 	}()
 
 	// Receiver goroutine: reads replies, closes rc when done.
 	go func() {
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		defer close(rc)
 
 		rb := make([]byte, 1500)
@@ -151,7 +153,9 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 
 			// Set a read deadline so we don't block forever.
 			timeout := r.Delay + time.Second
-			c.SetReadDeadline(time.Now().Add(timeout))
+			if err := c.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+				return
+			}
 
 			reply := receiveOne(c, proto, rb)
 
