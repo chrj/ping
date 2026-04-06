@@ -52,11 +52,11 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 	}
 
 	if r.Target.To4() != nil {
-		c, err = icmp.ListenPacket("udp4", "0.0.0.0")
+		c, err = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
 		proto = ProtocolICMP
 		pktType = ipv4.ICMPTypeEcho
 	} else {
-		c, err = icmp.ListenPacket("udp6", "::")
+		c, err = icmp.ListenPacket("ip6:ipv6-icmp", "::")
 		proto = ProtocolICMPv6
 		pktType = ipv6.ICMPTypeEchoRequest
 	}
@@ -120,7 +120,7 @@ func (r *Request) Send(ctx context.Context) (<-chan Reply, error) {
 				continue
 			}
 
-			target := &net.UDPAddr{IP: r.Target}
+			target := &net.IPAddr{IP: r.Target}
 			if _, err := c.WriteTo(mmsg, target); err != nil {
 				continue
 			}
