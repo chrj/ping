@@ -7,3 +7,7 @@ As a small exercise, I implemented ICMP echo using the `golang.org/x/net/icmp` a
 * Timestamps are encoded in the data part of of the echo packet
 * Error handling needs improvement
 * Still work in progress
+
+## License
+
+MIT — see [LICENSE](LICENSE).
