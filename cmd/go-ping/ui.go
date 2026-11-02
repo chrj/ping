@@ -75,11 +75,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		cap := m.width - 12
-		if cap < 10 {
-			cap = 10
-		}
-		m.chartCap = cap
+		m.chartCap = max(m.width-12, 10)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -118,10 +114,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	left := headerStyle.Render(fmt.Sprintf("go-ping  target: %s  interval: %s", m.target, m.interval))
 	right := faintStyle.Render("q to quit")
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
-	}
+	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
 	header := left + strings.Repeat(" ", gap) + right
 
 	chart := chartStyle.Render(barChart(m.samples, m.chartCap, 8, m.interval))
@@ -166,7 +159,7 @@ func barChart(samples []time.Duration, width, height int, interval time.Duration
 
 	const numYLabels = 4
 	yLabelAt := make(map[int]string, numYLabels)
-	for i := 0; i < numYLabels; i++ {
+	for i := range numYLabels {
 		row := i * (height - 1) / (numYLabels - 1)
 		val := maxRTT * time.Duration(height-1-row) / time.Duration(height-1)
 		if row == height-1 {
@@ -196,16 +189,13 @@ func barChart(samples []time.Duration, width, height int, interval time.Duration
 
 		var filledUnits int
 		if maxRTT > 0 {
-			filledUnits = int(float64(s) / float64(maxRTT) * float64(totalUnits))
-			if filledUnits > totalUnits {
-				filledUnits = totalUnits
-			}
+			filledUnits = min(int(float64(s)/float64(maxRTT)*float64(totalUnits)), totalUnits)
 		}
 
 		fullRows := filledUnits / len(blocks)
 		partialIdx := filledUnits % len(blocks)
 
-		for r := 0; r < height; r++ {
+		for r := range height {
 			rowFromBottom := height - 1 - r
 			switch {
 			case rowFromBottom < fullRows:
@@ -220,7 +210,7 @@ func barChart(samples []time.Duration, width, height int, interval time.Duration
 
 	chartW := len(visible)
 	lines := make([]string, 0, height+2)
-	for r := 0; r < height; r++ {
+	for r := range height {
 		var yLabel, axisChar string
 		if lbl, ok := yLabelAt[r]; ok {
 			yLabel = fmt.Sprintf("%*s", labelW, lbl)
